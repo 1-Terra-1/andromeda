@@ -9,17 +9,14 @@
   html, body { margin: 0; height: 100%; background: #04020b; overflow: hidden; }
   /* Layers are stacked and blended by the browser (GPU), so each frame only the small ones are redrawn */
   #scene { position: fixed; inset: 0; overflow: hidden; background: #04020b; isolation: isolate; }
-  #scene > * {
-    position: absolute; left: -24px; top: -24px; display: block;
-    will-change: transform; transition: transform .5s cubic-bezier(.2, .7, .2, 1);
-  }
+  #scene > * { position: absolute; left: 0; top: 0; display: block; }
   #haze { opacity: .7; mix-blend-mode: screen; mix-blend-mode: plus-lighter; }
   #glyphs { overflow: hidden; background: #000; mix-blend-mode: screen; mix-blend-mode: plus-lighter; }
   #glyphs canvas { position: absolute; left: 0; top: 0; display: block; }
   #tint { mix-blend-mode: multiply; image-rendering: pixelated; }
   #top {
-    position: fixed; left: 50%; top: 7vh; transform: translateX(-50%);
-    width: min(560px, 80vw); text-align: center;
+    position: fixed; left: 50%; bottom: 5vh; transform: translateX(-50%);
+    width: min(560px, 44vw); text-align: center;
     font-family: "Cascadia Mono", Consolas, "Courier New", monospace;
   }
   #search { margin: 0; }
@@ -42,12 +39,13 @@
   }
   #links a:hover, #links a:focus-visible { color: #f1ebff; text-shadow: 0 0 10px #8c5aff; outline: none; }
   #clock {
-    position: fixed; left: 0; right: 0; bottom: 5vh; text-align: center;
+    position: fixed; right: 3vw; bottom: 5vh; text-align: right;
     font: 600 14px/1.4 "Cascadia Mono", Consolas, "Courier New", monospace;
     color: #b9a3ff; letter-spacing: 0.3em; text-shadow: 0 0 10px #5a2cff;
     user-select: none; pointer-events: none;
   }
   #clock .t { font-size: 36px; color: #f1ebff; letter-spacing: 0.15em; }
+  @media (max-width: 1050px) { #clock .d { display: none; } }
 </style>
 </head>
 <body>
@@ -65,8 +63,8 @@
   <nav id="links">
     <a href="https://www.youtube.com/">[ youtube ]</a>
     <a href="https://mail.google.com/">[ gmail ]</a>
-    <a href="https://github.com/">[ github ]</a>
-    <a href="https://it.wikipedia.org/">[ wikipedia ]</a>
+    <a href="https://warframe.market/">[ warframe market ]</a>
+    <a href="https://elearning.unimib.it/?redirect=0">[ e-learning ]</a>
   </nav>
 </div>
 <div id="clock"><div class="t"></div><div class="d"></div></div>
@@ -75,7 +73,7 @@
   // dense ramp: from almost empty to full glyphs
   const RAMP = " .'`^,:;-~=+<>il!?*%xzcvunrjft1oeaskhdbpqwmZO0QXEHNWM#&@";
   const L = RAMP.length, CODES = Array.from(RAMP, c => c.charCodeAt(0));
-  const FONT_SIZE = 10, M = 24; // M = extra margin so the parallax never shows an edge
+  const FONT_SIZE = 10, M = 0;
   const FONT = `600 ${FONT_SIZE}px "Cascadia Mono", Consolas, "Courier New", monospace`;
   const PA = -0.5, cosPA = Math.cos(PA), sinPA = Math.sin(PA), TILT = 0.3, PITCH = 8.5;
   const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -151,7 +149,7 @@
     grid = new Float32Array(cols * rows); gridCol = new Float32Array(cols * rows * 3);
     chars = new Uint8Array(cols * rows); rowUsed = new Uint8Array(rows);
 
-    R = Math.min(vw * 0.48, vh * 0.88); cx = W / 2; cy = M + vh * 0.52;
+    R = Math.min(vw * 0.48, vh * 0.88); cx = W / 2; cy = M + vh * 0.46;
     const a = [];
     for (let j = 0; j < rows; j++) {
       const py = j * ch + ch / 2 - cy;
@@ -318,22 +316,6 @@
     if (now - lastSky >= (meteor ? 16 : 100)) { lastSky = now; drawSky(t); }
   }
   requestAnimationFrame(frame);
-
-  // ---------- depth: the two layers follow the mouse by different amounts ----------
-  if (!reduce) {
-    let pending = false, mx = 0, my = 0;
-    const apply = () => {
-      pending = false;
-      const tr = `translate(${(-mx * 32).toFixed(1)}px, ${(-my * 32).toFixed(1)}px)`;
-      glowCv.style.transform = hazeCv.style.transform = glyphs.style.transform = tr;
-      skyCv.style.transform = `translate(${(-mx * 10).toFixed(1)}px, ${(-my * 10).toFixed(1)}px)`;
-    };
-    addEventListener('mousemove', e => {
-      mx = e.clientX / innerWidth - 0.5; my = e.clientY / innerHeight - 0.5;
-      if (!pending) { pending = true; requestAnimationFrame(apply); }
-    });
-    document.addEventListener('mouseleave', () => { mx = my = 0; apply(); });
-  }
 
   // ---------- search: start typing anywhere, Esc clears ----------
   const q = document.querySelector('#search input');
