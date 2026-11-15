@@ -2,21 +2,27 @@
 <html lang="it">
 <head>
 <meta charset="utf-8">
-<title>Andromeda</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nuova scheda</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%2304020b'/%3E%3Cg transform='rotate(-30 32 32)'%3E%3Cellipse cx='32' cy='32' rx='27' ry='9' fill='%237a5cff' opacity='.55'/%3E%3Cellipse cx='32' cy='32' rx='18' ry='5.5' fill='%23c9b6ff' opacity='.8'/%3E%3Ccircle cx='32' cy='32' r='5' fill='%23ffe2a8'/%3E%3C/g%3E%3C/svg%3E">
 <style>
   html, body { margin: 0; height: 100%; background: #04020b; overflow: hidden; }
-  canvas { display: block; position: fixed; inset: 0; }
-  #clock {
-    position: fixed; left: 0; right: 0; bottom: 5vh; text-align: center;
-    font: 600 14px/1.4 "Cascadia Mono", Consolas, "Courier New", monospace;
-    color: #b9a3ff; letter-spacing: 0.3em; text-shadow: 0 0 10px #5a2cff;
-    user-select: none; pointer-events: none;
+  /* Layers are stacked and blended by the browser (GPU), so each frame only the small ones are redrawn */
+  #scene { position: fixed; inset: 0; overflow: hidden; background: #04020b; isolation: isolate; }
+  #scene > * {
+    position: absolute; left: -24px; top: -24px; display: block;
+    will-change: transform; transition: transform .5s cubic-bezier(.2, .7, .2, 1);
   }
-  #clock .t { font-size: 36px; color: #f1ebff; letter-spacing: 0.15em; }
-  #search {
-    position: fixed; left: 50%; bottom: 17vh; transform: translateX(-50%);
-    width: min(560px, 80vw); margin: 0;
+  #haze { opacity: .7; mix-blend-mode: screen; mix-blend-mode: plus-lighter; }
+  #glyphs { overflow: hidden; background: #000; mix-blend-mode: screen; mix-blend-mode: plus-lighter; }
+  #glyphs canvas { position: absolute; left: 0; top: 0; display: block; }
+  #tint { mix-blend-mode: multiply; image-rendering: pixelated; }
+  #top {
+    position: fixed; left: 50%; top: 7vh; transform: translateX(-50%);
+    width: min(560px, 80vw); text-align: center;
+    font-family: "Cascadia Mono", Consolas, "Courier New", monospace;
   }
+  #search { margin: 0; }
   #search input {
     width: 100%; box-sizing: border-box; padding: 12px 18px;
     font: 15px "Cascadia Mono", Consolas, "Courier New", monospace; color: #f1ebff;
@@ -26,25 +32,67 @@
   }
   #search input::placeholder { color: rgba(200, 185, 255, 0.5); }
   #search input:focus { border-color: #b18cff; box-shadow: 0 0 26px rgba(140, 90, 255, 0.5); }
+  #links {
+    margin-top: 14px; display: flex; justify-content: center; flex-wrap: wrap; gap: 6px 16px;
+    font-size: 13px; letter-spacing: 0.08em;
+  }
+  #links a {
+    color: rgba(200, 185, 255, 0.65); text-decoration: none;
+    transition: color .2s, text-shadow .2s;
+  }
+  #links a:hover, #links a:focus-visible { color: #f1ebff; text-shadow: 0 0 10px #8c5aff; outline: none; }
+  #clock {
+    position: fixed; left: 0; right: 0; bottom: 5vh; text-align: center;
+    font: 600 14px/1.4 "Cascadia Mono", Consolas, "Courier New", monospace;
+    color: #b9a3ff; letter-spacing: 0.3em; text-shadow: 0 0 10px #5a2cff;
+    user-select: none; pointer-events: none;
+  }
+  #clock .t { font-size: 36px; color: #f1ebff; letter-spacing: 0.15em; }
 </style>
 </head>
 <body>
-<canvas id="c"></canvas>
-<form id="search" action="https://www.google.com/search" method="get" autocomplete="off">
-  <input name="q" type="search" placeholder="&gt; cerca nell'universo..." aria-label="Cerca" autofocus>
-</form>
+<div id="scene">
+  <canvas id="stars"></canvas>
+  <canvas id="glow"></canvas>
+  <canvas id="haze"></canvas>
+  <div id="glyphs"><canvas id="txt"></canvas><canvas id="tint"></canvas></div>
+</div>
+<div id="top">
+  <form id="search" action="https://www.google.com/search" method="get" autocomplete="off">
+    <input name="q" type="search" placeholder="&gt; cerca nell'universo..." aria-label="Cerca" autofocus>
+  </form>
+  <!-- Link rapidi: per cambiarli basta modificare queste righe -->
+  <nav id="links">
+    <a href="https://www.youtube.com/">[ youtube ]</a>
+    <a href="https://mail.google.com/">[ gmail ]</a>
+    <a href="https://github.com/">[ github ]</a>
+    <a href="https://it.wikipedia.org/">[ wikipedia ]</a>
+  </nav>
+</div>
 <div id="clock"><div class="t"></div><div class="d"></div></div>
 <script>
 (() => {
-  const canvas = document.getElementById('c');
-  const ctx = canvas.getContext('2d');
   // dense ramp: from almost empty to full glyphs
   const RAMP = " .'`^,:;-~=+<>il!?*%xzcvunrjft1oeaskhdbpqwmZO0QXEHNWM#&@";
-  const L = RAMP.length;
-  const FONT_SIZE = 10;
-  let cols, rows, cw, ch, W, H, dpr, stars, glowCv, glowCtx, glowImg, glow2, glow2Ctx, grid, gridCol;
+  const L = RAMP.length, CODES = Array.from(RAMP, c => c.charCodeAt(0));
+  const FONT_SIZE = 10, M = 24; // M = extra margin so the parallax never shows an edge
+  const FONT = `600 ${FONT_SIZE}px "Cascadia Mono", Consolas, "Courier New", monospace`;
+  const PA = -0.5, cosPA = Math.cos(PA), sinPA = Math.sin(PA), TILT = 0.3, PITCH = 8.5;
+  const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-  // ---------- value noise (tileable, 4 octaves) ----------
+  const $ = id => document.getElementById(id);
+  const skyCv = $('stars'), sky = skyCv.getContext('2d');
+  const txtCv = $('txt'), txt = txtCv.getContext('2d');
+  const glowCv = $('glow'), glowX = glowCv.getContext('2d');   // sharp glow + mask hiding the stars behind
+  const hazeCv = $('haze'), hazeX = hazeCv.getContext('2d');   // wide soft glow, 1/8 resolution
+  const tintCv = $('tint'), tintX = tintCv.getContext('2d');   // one pixel per glyph = its colour
+  const glyphs = $('glyphs'), HZ = 8;
+
+  let W, H, dpr, cw, ch, cols, rows, hc, hr, R, cx, cy, count, stars;
+  let grid, gridCol, chars, rowUsed, haze, glowImg, hazeImg, tintImg;
+  let AK, AX, AY, PH0, BUL, EDGE, DK, RING, DEXP, COUT, RBF;
+
+  // ---------- value noise (tileable, 5 octaves) ----------
   const N = 256, noise = new Float32Array(N * N);
   { const base = new Float32Array(N * N).map(() => Math.random());
     for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
@@ -62,39 +110,77 @@
       noise[y * N + x] = s / tot;
     } }
   const nz = (x, y) => {
-    x = ((x % N) + N) % N; y = ((y % N) + N) % N;
-    const x0 = x | 0, y0 = y | 0, fx = x - x0, fy = y - y0;
-    const x1 = (x0 + 1) % N, y1 = (y0 + 1) % N;
-    return noise[y0 * N + x0] * (1 - fx) * (1 - fy) + noise[y0 * N + x1] * fx * (1 - fy)
-         + noise[y1 * N + x0] * (1 - fx) * fy + noise[y1 * N + x1] * fx * fy;
+    const xf = Math.floor(x), yf = Math.floor(y), fx = x - xf, fy = y - yf;
+    const x0 = xf & 255, x1 = (xf + 1) & 255, y0 = (yf & 255) << 8, y1 = ((yf + 1) & 255) << 8;
+    return noise[y0 + x0] * (1 - fx) * (1 - fy) + noise[y0 + x1] * fx * (1 - fy)
+         + noise[y1 + x0] * (1 - fx) * fy + noise[y1 + x1] * fx * fy;
   };
 
   // ---------- star clusters / HII knots fixed in the disk frame ----------
-  const knots = Array.from({ length: 260 }, () => {
-    const r = 0.22 + Math.random() * 0.6, a = Math.random() * Math.PI * 2;
-    return { r, a, s: 0.006 + Math.random() * 0.018, b: 0.3 + Math.random() * 0.7,
-             blue: Math.random() < 0.65 };
-  });
+  const knots = Array.from({ length: 260 }, () => ({
+    r: 0.22 + Math.random() * 0.6, a: Math.random() * Math.PI * 2,
+    b: 0.3 + Math.random() * 0.7, blue: Math.random() < 0.65
+  }));
 
+  // ---------- layout: everything that does not depend on the rotation is computed once ----------
   function resize() {
     dpr = window.devicePixelRatio || 1;
-    W = innerWidth; H = innerHeight;
-    canvas.width = W * dpr; canvas.height = H * dpr;
-    canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.font = `600 ${FONT_SIZE}px "Cascadia Mono", Consolas, "Courier New", monospace`;
-    ctx.textBaseline = 'top';
-    cw = ctx.measureText('M').width; ch = FONT_SIZE * 1.12;
+    const vw = innerWidth, vh = innerHeight;
+    W = vw + 2 * M; H = vh + 2 * M;
+    for (const [cv, c] of [[skyCv, sky], [txtCv, txt]]) {
+      cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+      cv.style.width = W + 'px'; cv.style.height = H + 'px';
+      c.setTransform(dpr, 0, 0, dpr, 0, 0); c.font = FONT; c.textBaseline = 'top';
+    }
+    txt.fillStyle = '#fff';
+    cw = txt.measureText('M').width; ch = FONT_SIZE * 1.12;
     cols = Math.ceil(W / cw); rows = Math.ceil(H / ch);
-    grid = new Float32Array(cols * rows);
-    gridCol = new Float32Array(cols * rows * 3);
-    glowCv = document.createElement('canvas');
-    glowCv.width = cols; glowCv.height = rows;
-    glowCtx = glowCv.getContext('2d');
-    glowImg = glowCtx.createImageData(cols, rows);
-    glow2 = document.createElement('canvas');
-    glow2.width = Math.max(1, cols >> 3); glow2.height = Math.max(1, rows >> 3);
-    glow2Ctx = glow2.getContext('2d');
+    hc = Math.ceil(cols / HZ); hr = Math.ceil(rows / HZ);
+    glyphs.style.width = W + 'px'; glyphs.style.height = H + 'px';
+    // small canvases, stretched by CSS so that one pixel covers exactly one character cell
+    for (const cv of [glowCv, tintCv]) {
+      cv.width = cols; cv.height = rows;
+      cv.style.width = cols * cw + 'px'; cv.style.height = rows * ch + 'px';
+    }
+    hazeCv.width = hc; hazeCv.height = hr;
+    hazeCv.style.width = hc * HZ * cw + 'px'; hazeCv.style.height = hr * HZ * ch + 'px';
+    glowImg = glowX.createImageData(cols, rows);
+    tintImg = tintX.createImageData(cols, rows);
+    hazeImg = hazeX.createImageData(hc, hr);
+    haze = new Float32Array(hc * hr * 4);
+    grid = new Float32Array(cols * rows); gridCol = new Float32Array(cols * rows * 3);
+    chars = new Uint8Array(cols * rows); rowUsed = new Uint8Array(rows);
+
+    R = Math.min(vw * 0.48, vh * 0.88); cx = W / 2; cy = M + vh * 0.52;
+    const a = [];
+    for (let j = 0; j < rows; j++) {
+      const py = j * ch + ch / 2 - cy;
+      for (let i = 0; i < cols; i++) {
+        const px = i * cw + cw / 2 - cx;
+        const x = (px * cosPA + py * sinPA) / R;
+        const y = (-px * sinPA + py * cosPA) / R / TILT;
+        const r = Math.hypot(x, y);
+        if (r >= 1.1) continue;
+        const rb = Math.hypot(x, y * TILT / 0.6); // roundish bulge
+        a.push(
+          j * cols + i, x, y,
+          2 * Math.atan2(y, x) - PITCH * Math.log(r + 0.03),
+          1.3 * Math.exp(-rb * rb / 0.0015) + 0.8 * Math.exp(-rb / 0.075) + 0.2 * Math.exp(-rb / 0.2),
+          Math.max(0, 1 - Math.pow(r / 1.1, 5)),
+          (y < 0 ? 1 : 0.4) * Math.min(1, Math.max(0, (r - 0.1) * 6)), // dust: stronger on the near side
+          Math.exp(-Math.pow((r - 0.58) / 0.12, 2)),
+          0.6 * Math.exp(-r / 0.4),
+          Math.min(1, Math.max(0, (r - 0.35) * 1.4)),
+          rb > 0.04 ? 1 : 0
+        );
+      }
+    }
+    count = a.length / 11;
+    AK = new Int32Array(count);
+    [AX, AY, PH0, BUL, EDGE, DK, RING, DEXP, COUT, RBF] = Array.from({ length: 10 }, () => new Float32Array(count));
+    const F = [AK, AX, AY, PH0, BUL, EDGE, DK, RING, DEXP, COUT, RBF];
+    for (let n = 0; n < count; n++) for (let f = 0; f < 11; f++) F[f][n] = a[n * 11 + f];
+
     stars = Array.from({ length: Math.floor(cols * rows * 0.006) }, () => ({
       i: Math.random() * cols | 0, j: Math.random() * rows | 0,
       p: Math.random() * 6.28, s: 0.4 + Math.random() * 1.8, b: Math.pow(Math.random(), 2)
@@ -102,9 +188,84 @@
   }
   addEventListener('resize', resize); resize();
 
-  const PA = -0.5, cosPA = Math.cos(PA), sinPA = Math.sin(PA);
-  const TILT = 0.3;
-  const PITCH = 8.5;
+  // ---------- galaxy layer ----------
+  function drawGalaxy(t) {
+    const rot = t * 0.03, cosR = Math.cos(-rot), sinR = Math.sin(-rot), rot2 = 2 * rot;
+    grid.fill(0);
+
+    // 1) brightness + colour of every cell inside the disk
+    for (let n = 0; n < count; n++) {
+      const x = AX[n], y = AY[n];
+      const xr = x * cosR - y * sinR, yr = x * sinR + y * cosR; // disk's own frame
+      const ph = PH0[n] - rot2;
+      const n1 = nz(xr * 55 + 128, yr * 55 + 128);
+      const n2 = nz(xr * 140 + 30, yr * 140 + 70);
+      const n3 = nz(xr * 300 + 200, yr * 300 + 10);
+      const arm = Math.pow(0.5 + 0.5 * Math.cos(ph + 3.6 * (n1 - 0.5)), 1.6);
+      const disk = DEXP[n] * (0.35 + 0.8 * arm + 0.6 * RING[n] * (0.7 + 0.6 * n2)) * (0.4 + 1.1 * n1) * (0.8 + 0.4 * n3);
+      const lane = Math.pow(0.5 + 0.5 * Math.cos(ph + 1.5 + (n2 - 0.5) * 3), 3.5);
+      const dust = Math.min(1, lane * DK[n] * (0.5 + 0.8 * n2));
+      const bul = BUL[n];
+      const b = disk * (1 - 0.92 * dust) * EDGE[n] + bul * (1 - 0.35 * dust * RBF[n]);
+      if (b < 0.035) continue;
+
+      // golden core -> cream inner disk -> blue-violet outer disk, brownish in dust
+      const cCore = Math.min(1, bul / (bul + disk + 1e-4)), cOut = COUT[n], d = dust * 0.5;
+      const k = AK[n], k3 = k * 3;
+      grid[k] = b;
+      gridCol[k3] = (255 * cCore + (1 - cCore) * (225 - 105 * cOut)) * (1 - d) + 170 * d;
+      gridCol[k3 + 1] = (214 * cCore + (1 - cCore) * (200 - 50 * cOut)) * (1 - d) + 110 * d;
+      gridCol[k3 + 2] = (160 * cCore + (1 - cCore) * (235 + 20 * cOut)) * (1 - d) + 90 * d;
+    }
+
+    // star-forming knots (blue clusters / pink HII) riding the disk
+    for (const kn of knots) {
+      const a = kn.a + rot;
+      const gx = kn.r * Math.cos(a), gy = kn.r * Math.sin(a) * TILT;
+      const i = ((cx + (gx * cosPA - gy * sinPA) * R) / cw) | 0;
+      const j = ((cy + (gx * sinPA + gy * cosPA) * R) / ch) | 0;
+      if (i < 0 || j < 0 || i >= cols || j >= rows) continue;
+      const k = j * cols + i, k3 = k * 3;
+      if (grid[k] < 0.08) continue;
+      grid[k] += kn.b * 0.5;
+      if (kn.blue) { gridCol[k3] = 170; gridCol[k3 + 1] = 200; gridCol[k3 + 2] = 255; }
+      else { gridCol[k3] = 255; gridCol[k3 + 1] = 140; gridCol[k3 + 2] = 200; }
+    }
+
+    // 2) turn the grid into: glow (+ mask hiding the stars behind), wide haze, glyph colours, text rows
+    const gd = glowImg.data, td = tintImg.data, hd = hazeImg.data;
+    gd.fill(0); td.fill(0); haze.fill(0); chars.fill(32); rowUsed.fill(0);
+    for (let n = 0; n < count; n++) {
+      const k = AK[n], b = grid[k];
+      if (b <= 0) continue;
+      const k3 = k * 3, k4 = k * 4, r = gridCol[k3], g = gridCol[k3 + 1], bl = gridCol[k3 + 2];
+      const j = (k / cols) | 0, i = k - j * cols;
+      const gl = Math.min(1, b * 0.55), light = gl * 0.5;
+      const a = Math.max(light, Math.min(1, Math.max(0, (b - 0.06) * 6))), f = light / a;
+      gd[k4] = r * f; gd[k4 + 1] = g * f; gd[k4 + 2] = bl * f; gd[k4 + 3] = a * 255;
+      const h4 = ((j >> 3) * hc + (i >> 3)) * 4;
+      haze[h4] += r * gl; haze[h4 + 1] += g * gl; haze[h4 + 2] += bl * gl; haze[h4 + 3] += gl;
+      const bb = Math.min(1, Math.pow(b, 0.8)), idx = Math.min(L - 1, Math.floor(bb * L));
+      if (idx === 0) continue;
+      const lum = 0.45 + 0.55 * bb;
+      td[k4] = r * lum; td[k4 + 1] = g * lum; td[k4 + 2] = bl * lum; td[k4 + 3] = 255;
+      chars[k] = CODES[idx]; rowUsed[j] = 1;
+    }
+    for (let q = 0; q < haze.length; q += 4) {
+      const sum = haze[q + 3];
+      if (sum > 0) { hd[q] = haze[q] / sum; hd[q + 1] = haze[q + 1] / sum; hd[q + 2] = haze[q + 2] / sum; }
+      hd[q + 3] = sum * (255 / (HZ * HZ));
+    }
+    glowX.putImageData(glowImg, 0, 0); tintX.putImageData(tintImg, 0, 0); hazeX.putImageData(hazeImg, 0, 0);
+
+    // 3) glyphs: one fillText per row, in white; the tint layer above gives them their colour
+    txt.clearRect(0, 0, W, H);
+    for (let r = 0; r < rows; r++) {
+      if (rowUsed[r]) txt.fillText(String.fromCharCode.apply(null, chars.subarray(r * cols, (r + 1) * cols)), 0, r * ch);
+    }
+  }
+
+  // ---------- sky layer: twinkling stars + the occasional shooting star ----------
   const styleCache = new Map();
   const style = (r, g, b) => {
     const key = ((r >> 3) << 10) | ((g >> 3) << 5) | (b >> 3);
@@ -112,135 +273,77 @@
     if (!s) { s = `rgb(${(r >> 3) << 3},${(g >> 3) << 3},${(b >> 3) << 3})`; styleCache.set(key, s); }
     return s;
   };
+  const TRAIL = '@*+=~--::...';
+  let meteor = null, nextMeteor = 4 + Math.random() * 6;
 
-  let last = 0;
-  function frame(now) {
-    requestAnimationFrame(frame);
-    if (now - last < 45) return; // ~22 fps, plenty for a slow rotation
-    last = now;
-    const t = now / 1000;
-    const rot = t * 0.03;
-    const cosR = Math.cos(-rot), sinR = Math.sin(-rot);
-
-    const R = Math.min(W * 0.48, H * 0.88);
-    const cx = W / 2, cy = H * 0.46;
-    grid.fill(0); gridCol.fill(0);
-
-    // ---- 1) compute brightness + colour per cell ----
-    for (let j = 0; j < rows; j++) {
-      const py = j * ch + ch / 2 - cy;
-      for (let i = 0; i < cols; i++) {
-        const px = i * cw + cw / 2 - cx;
-        const x = (px * cosPA + py * sinPA) / R;
-        const y = (-px * sinPA + py * cosPA) / R / TILT;
-        const r2 = x * x + y * y;
-        const rb = Math.hypot(x, y * TILT / 0.6);           // roundish bulge
-        if (r2 > 1.3 && rb > 0.5) continue;
-        const r = Math.sqrt(r2);
-        // rotate into the disk's own frame
-        const xr = x * cosR - y * sinR, yr = x * sinR + y * cosR;
-        const th = Math.atan2(yr, xr);
-        const lr = Math.log(r + 0.03);
-        const ph = 2 * th - PITCH * lr;
-
-        const n1 = nz(xr * 55 + 128, yr * 55 + 128);
-        const n2 = nz(xr * 140 + 30, yr * 140 + 70);
-        const n3 = nz(xr * 300 + 200, yr * 300 + 10);
-
-        // disk components
-        const arm = Math.pow(0.5 + 0.5 * Math.cos(ph + 0.6 * (n1 - 0.5) * 6), 1.6);
-        const ring = Math.exp(-Math.pow((r - 0.58) / 0.12, 2)) * (0.7 + 0.6 * n2);
-        const disk = 0.6 * Math.exp(-r / 0.4) * (0.35 + 0.8 * arm + 0.6 * ring) * (0.4 + 1.1 * n1) * (0.8 + 0.4 * n3);
-        const bulge = 1.3 * Math.exp(-rb * rb / 0.0015) + 0.8 * Math.exp(-rb / 0.075) + 0.2 * Math.exp(-rb / 0.2);
-        // dust lanes, much stronger on the near (upper) side
-        const near = y < 0 ? 1 : 0.4;
-        const lane = Math.pow(0.5 + 0.5 * Math.cos(ph + 1.5 + (n2 - 0.5) * 3), 3.5);
-        const dust = lane * near * Math.min(1, Math.max(0, (r - 0.1) * 6)) * (0.5 + 0.8 * n2);
-        const edge = Math.max(0, 1 - Math.pow(r / 1.1, 5));
-
-        let b = (disk * (1 - 0.92 * Math.min(1, dust)) * edge + bulge * (1 - 0.35 * Math.min(1, dust) * (rb > 0.04 ? 1 : 0)));
-        if (b < 0.035) continue;
-
-        // colour: golden core -> cream inner disk -> blue-violet outer disk, brownish in dust
-        const cCore = Math.min(1, bulge / (bulge + disk + 1e-4));
-        const cOut = Math.min(1, Math.max(0, (r - 0.35) * 1.4));
-        let cr = 255 * cCore + (1 - cCore) * (225 * (1 - cOut) + 120 * cOut);
-        let cg = 214 * cCore + (1 - cCore) * (200 * (1 - cOut) + 150 * cOut);
-        let cb = 160 * cCore + (1 - cCore) * (235 * (1 - cOut) + 255 * cOut);
-        const d = Math.min(1, dust) * 0.5;
-        cr = cr * (1 - d) + 170 * d; cg = cg * (1 - d) + 110 * d; cb = cb * (1 - d) + 90 * d;
-
-        const k = j * cols + i;
-        grid[k] = b;
-        gridCol[k * 3] = cr; gridCol[k * 3 + 1] = cg; gridCol[k * 3 + 2] = cb;
-      }
-    }
-
-    // star-forming knots (blue clusters / pink HII) riding the disk
-    for (const kn of knots) {
-      const a = kn.a + rot;
-      const gx = kn.r * Math.cos(a), gy = kn.r * Math.sin(a) * TILT;
-      const sx = cx + (gx * cosPA - gy * sinPA) * R, sy = cy + (gx * sinPA + gy * cosPA) * R;
-      const i = (sx / cw) | 0, j = (sy / ch) | 0;
-      if (i < 0 || j < 0 || i >= cols || j >= rows) continue;
-      const k = j * cols + i;
-      if (grid[k] < 0.08) continue;
-      grid[k] += kn.b * 0.5;
-      if (kn.blue) { gridCol[k * 3] = 170; gridCol[k * 3 + 1] = 200; gridCol[k * 3 + 2] = 255; }
-      else { gridCol[k * 3] = 255; gridCol[k * 3 + 1] = 140; gridCol[k * 3 + 2] = 200; }
-    }
-
-    // ---- 2) soft glow layer underneath (low-res image, blurred & upscaled) ----
-    const px = glowImg.data;
-    for (let k = 0, n = cols * rows; k < n; k++) {
-      const g = Math.min(1, grid[k] * 0.55);
-      px[k * 4] = gridCol[k * 3] * g; px[k * 4 + 1] = gridCol[k * 3 + 1] * g;
-      px[k * 4 + 2] = gridCol[k * 3 + 2] * g; px[k * 4 + 3] = 255;
-    }
-    glowCtx.putImageData(glowImg, 0, 0);
-    ctx.globalCompositeOperation = 'source-over';
-    ctx.fillStyle = '#04020b'; ctx.fillRect(0, 0, W, H);
-    ctx.globalCompositeOperation = 'lighter';
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = 'high';
-    glow2Ctx.drawImage(glowCv, 0, 0, glow2.width, glow2.height);   // downsample = cheap blur
-    ctx.globalAlpha = 0.5;
-    ctx.drawImage(glowCv, 0, 0, cols * cw, rows * ch);
-    ctx.globalAlpha = 0.7;
-    ctx.drawImage(glow2, 0, 0, cols * cw, rows * ch);
-    ctx.globalAlpha = 1;
-
-    // ---- 3) ASCII glyphs on top ----
-    for (let j = 0; j < rows; j++) {
-      for (let i = 0; i < cols; i++) {
-        const k = j * cols + i, b = grid[k];
-        if (b <= 0) continue;
-        const bb = Math.min(1, Math.pow(b, 0.8));
-        const idx = Math.min(L - 1, Math.floor(bb * L));
-        if (idx === 0) continue;
-        const lum = 0.45 + 0.55 * bb;
-        ctx.fillStyle = style(Math.min(255, gridCol[k * 3] * lum) | 0,
-                              Math.min(255, gridCol[k * 3 + 1] * lum) | 0,
-                              Math.min(255, gridCol[k * 3 + 2] * lum) | 0);
-        ctx.fillText(RAMP[idx], i * cw, j * ch);
-      }
-    }
-
-    // ---- 4) foreground twinkling stars ----
+  function drawSky(t) {
+    sky.clearRect(0, 0, W, H);
     for (const s of stars) {
-      if (grid[s.j * cols + s.i] > 0.15) continue;
       const tw = 0.5 + 0.5 * Math.sin(t * s.s + s.p);
       const v = 0.2 + 0.8 * tw * (0.3 + 0.7 * s.b);
       const g = s.b > 0.75 && tw > 0.85 ? '*' : s.b > 0.4 && tw > 0.5 ? '+' : '.';
       const c = (60 + 195 * v) | 0;
-      ctx.fillStyle = style(c, c, Math.min(255, c + 20));
-      ctx.fillText(g, s.i * cw, s.j * ch);
+      sky.fillStyle = style(c, c, Math.min(255, c + 20));
+      sky.fillText(g, s.i * cw, s.j * ch);
     }
-    ctx.globalCompositeOperation = 'source-over';
+    if (reduce) return;
+    if (!meteor && t > nextMeteor) {
+      const dir = Math.random() < 0.5 ? 1 : -1;
+      meteor = {
+        x: W * (0.15 + Math.random() * 0.7), y: H * Math.random() * 0.35,
+        vx: dir * (500 + Math.random() * 400), vy: 180 + Math.random() * 220,
+        t0: t, life: 0.7 + Math.random() * 0.5
+      };
+    }
+    if (!meteor) return;
+    const age = t - meteor.t0;
+    if (age > meteor.life) { meteor = null; nextMeteor = t + 7 + Math.random() * 13; return; }
+    const sp = Math.hypot(meteor.vx, meteor.vy), ux = meteor.vx / sp, uy = meteor.vy / sp;
+    const hx = meteor.x + meteor.vx * age, hy = meteor.y + meteor.vy * age;
+    const fade = Math.sin(Math.PI * age / meteor.life);
+    for (let q = 0; q < TRAIL.length; q++) {
+      const i = ((hx - ux * q * 9) / cw) | 0, j = ((hy - uy * q * 9) / ch) | 0;
+      const v = fade * (1 - q / TRAIL.length);
+      sky.fillStyle = style((255 * v) | 0, (245 * v) | 0, (255 * v) | 0);
+      sky.fillText(TRAIL[q], i * cw, j * ch);
+    }
+  }
+
+  // galaxy at ~12 fps (it turns slowly), sky at 10 fps, full speed only while a shooting star is passing
+  let lastGal = -1e9, lastSky = -1e9;
+  function frame(now) {
+    requestAnimationFrame(frame);
+    const t = now / 1000;
+    if (now - lastGal >= 80) { lastGal = now; drawGalaxy(t); }
+    if (now - lastSky >= (meteor ? 16 : 100)) { lastSky = now; drawSky(t); }
   }
   requestAnimationFrame(frame);
 
-  // clock
+  // ---------- depth: the two layers follow the mouse by different amounts ----------
+  if (!reduce) {
+    let pending = false, mx = 0, my = 0;
+    const apply = () => {
+      pending = false;
+      const tr = `translate(${(-mx * 32).toFixed(1)}px, ${(-my * 32).toFixed(1)}px)`;
+      glowCv.style.transform = hazeCv.style.transform = glyphs.style.transform = tr;
+      skyCv.style.transform = `translate(${(-mx * 10).toFixed(1)}px, ${(-my * 10).toFixed(1)}px)`;
+    };
+    addEventListener('mousemove', e => {
+      mx = e.clientX / innerWidth - 0.5; my = e.clientY / innerHeight - 0.5;
+      if (!pending) { pending = true; requestAnimationFrame(apply); }
+    });
+    document.addEventListener('mouseleave', () => { mx = my = 0; apply(); });
+  }
+
+  // ---------- search: start typing anywhere, Esc clears ----------
+  const q = document.querySelector('#search input');
+  addEventListener('keydown', e => {
+    if (e.key === 'Escape') { q.value = ''; q.blur(); return; }
+    if (document.activeElement === q || e.ctrlKey || e.metaKey || e.altKey || e.key.length !== 1) return;
+    q.focus();
+  });
+
+  // ---------- clock ----------
   const tEl = document.querySelector('#clock .t'), dEl = document.querySelector('#clock .d');
   function tick() {
     const d = new Date();
@@ -248,6 +351,11 @@
     dEl.textContent = d.toLocaleDateString('it-IT', { weekday: 'long', day: 'numeric', month: 'long' }).toUpperCase();
   }
   tick(); setInterval(tick, 1000);
+
+  // ---------- offline: keep a copy of the page in the browser ----------
+  if ('serviceWorker' in navigator && location.protocol === 'https:') {
+    navigator.serviceWorker.register('sw.js').catch(() => {});
+  }
 })();
 </script>
 </body>
