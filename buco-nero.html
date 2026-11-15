@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nuova scheda</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%2304020b'/%3E%3Cellipse cx='32' cy='27' rx='15' ry='14' fill='none' stroke='%23ffb45a' stroke-width='4'/%3E%3Ccircle cx='32' cy='32' r='11' fill='%23000'/%3E%3Cellipse cx='32' cy='35' rx='27' ry='4.5' fill='%23ffd9a0'/%3E%3C/svg%3E">
+<style>
+  html, body { margin: 0; height: 100%; background: #04020b; overflow: hidden; }
+  /* Layers are stacked and blended by the browser (GPU), so each frame only the small ones are redrawn */
+  #scene { position: fixed; inset: 0; overflow: hidden; background: #04020b; isolation: isolate; }
+  #scene > * { position: absolute; left: 0; top: 0; display: block; }
+  #hole { border-radius: 50%; background: #020106; }
+  #haze { opacity: .7; mix-blend-mode: screen; mix-blend-mode: plus-lighter; }
+  #glyphs { overflow: hidden; background: #000; mix-blend-mode: screen; mix-blend-mode: plus-lighter; }
+  #glyphs canvas { position: absolute; left: 0; top: 0; display: block; }
+  #tint { mix-blend-mode: multiply; image-rendering: pixelated; }
+  #top {
+    position: fixed; left: 50%; bottom: 5vh; transform: translateX(-50%);
+    width: min(560px, 44vw); text-align: center;
+    font-family: "Cascadia Mono", Consolas, "Courier New", monospace;
+  }
+  #search { margin: 0; }
+  #search input {
+    width: 100%; box-sizing: border-box; padding: 12px 18px;
+    font: 15px "Cascadia Mono", Consolas, "Courier New", monospace; color: #f1ebff;
+    background: rgba(12, 6, 30, 0.55); border: 1px solid rgba(177, 140, 255, 0.35);
+    border-radius: 999px; outline: none; backdrop-filter: blur(6px);
+    box-shadow: 0 0 18px rgba(90, 44, 255, 0.25); transition: border-color .2s, box-shadow .2s;
+  }
+  #search input::placeholder { color: rgba(200, 185, 255, 0.5); }
+  #search input:focus { border-color: #b18cff; box-shadow: 0 0 26px rgba(140, 90, 255, 0.5); }
+  #links {
+    margin-top: 14px; display: flex; justify-content: center; flex-wrap: wrap; gap: 6px 16px;
+    font-size: 13px; letter-spacing: 0.08em;
+  }
+  #links a {
+    color: rgba(200, 185, 255, 0.65); text-decoration: none;
+    transition: color .2s, text-shadow .2s;
+  }
+  #links a:hover, #links a:focus-visible { color: #f1ebff; text-shadow: 0 0 10px #8c5aff; outline: none; }
+  #clock {
+    position: fixed; right: 3vw; bottom: 5vh; text-align: right;
+    font: 600 14px/1.4 "Cascadia Mono", Consolas, "Courier New", monospace;
+    color: #b9a3ff; letter-spacing: 0.3em; text-shadow: 0 0 10px #5a2cff;
+    user-select: none; pointer-events: none;
+  }
+  #clock .t { font-size: 36px; color: #f1ebff; letter-spacing: 0.15em; }
+  @media (max-width: 1050px) { #clock .d { display: none; } }
+</style>
+</head>
+<body>
+<div id="scene">
+  <canvas id="stars"></canvas>
+  <div id="hole"></div>
+  <canvas id="glow"></canvas>
+  <canvas id="haze"></canvas>
+  <div id="glyphs"><canvas id="txt"></canvas><canvas id="tint"></canvas></div>
+</div>
+<div id="top">
+  <form id="search" action="https://www.google.com/search" method="get" autocomplete="off">
+    <input name="q" type="search" placeholder="&gt; cerca nell'universo..." aria-label="Cerca" autofocus>
+  </form>
+  <!-- Link rapidi: per cambiarli basta modificare queste righe -->
+  <nav id="links">
+    <a href="https://www.youtube.com/">[ youtube ]</a>
+    <a href="https://mail.google.com/">[ gmail ]</a>
+    <a href="https://warframe.market/">[ warframe market ]</a>
+    <a href="https://elearning.unimib.it/?redirect=0">[ e-learning ]</a>
+  </nav>
+</div>
+<div id="clock"><div class="t"></div><div class="d"></div></div>
+<script>
+(() => {
+  // dense ramp: from almost empty to full glyphs
+  const RAMP = " .'`^,:;-~=+<>il!?*%xzcvunrjft1oeaskhdbpqwmZO0QXEHNWM#&@";
+  const L = RAMP.length, CODES = Array.from(RAMP, c => c.charCodeAt(0));
+  const FONT_SIZE = 10, M = 0;
+  const FONT = `600 ${FONT_SIZE}px "Cascadia Mono", Consolas, "Courier New", monospace`;
+  // black hole, lengths in Schwarzschild radii: shadow edge, inner/outer edge of the disk, viewing angle
+  const BC = 2.598, RIN = 3, ROUT = 12.5, INC = 80 * Math.PI / 180;
+  const SIN_I = Math.sin(INC), COS_I = Math.cos(INC);
+  const ROLL = -0.12, cosPA = Math.cos(ROLL), sinPA = Math.sin(ROLL);
+  const NRING = 3, SPIN = 0.55; // streak rings per unit of radius, angular speed at the inner edge (rad/s)
+  const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  const $ = id => document.getElementById(id);
+  const skyCv = $('stars'), sky = skyCv.getContext('2d');
+  const txtCv = $('txt'), txt = txtCv.getContext('2d');
+  const glowCv = $('glow'), glowX = glowCv.getContext('2d');   // sharp glow + mask hiding the stars behind
+  const hazeCv = $('haze'), hazeX = hazeCv.getContext('2d');   // wide soft glow, 1/8 resolution
+  const tintCv = $('tint'), tintX = tintCv.getContext('2d');   // one pixel per glyph = its colour
+  const glyphs = $('glyphs'), HZ = 8;
+
+  let W, H, dpr, cw, ch, cols, rows, hc, hr, R, cx, cy, count, stars;
+  let grid, gridCol, chars, rowUsed, haze, glowImg, hazeImg, tintImg;
+  let AK, AT, AG, ABR, AV, OFF, RW;
+
+  // ---------- value noise (tileable, 5 octaves) ----------
+  const N = 256, noise = new Float32Array(N * N);
+  { const base = new Float32Array(N * N).map(() => Math.random());
+    for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+      let s = 0, a = 1, tot = 0;
+      for (let o = 0; o < 5; o++) {
+        const step = 64 >> o;
+        const x0 = Math.floor(x / step) * step, y0 = Math.floor(y / step) * step;
+        let fx = (x - x0) / step, fy = (y - y0) / step;
+        fx = fx * fx * (3 - 2 * fx); fy = fy * fy * (3 - 2 * fy);
+        const g = (xx, yy) => base[((yy % N) * N) + (xx % N)];
+        const v = g(x0, y0) * (1 - fx) * (1 - fy) + g(x0 + step, y0) * fx * (1 - fy)
+                + g(x0, y0 + step) * (1 - fx) * fy + g(x0 + step, y0 + step) * fx * fy;
+        s += v * a; tot += a; a *= 0.55;
+      }
+      noise[y * N + x] = s / tot;
+    } }
+  const nz = (x, y) => {
+    const xf = Math.floor(x), yf = Math.floor(y), fx = x - xf, fy = y - yf;
+    const x0 = xf & 255, x1 = (xf + 1) & 255, y0 = (yf & 255) << 8, y1 = ((yf + 1) & 255) << 8;
+    return noise[y0 + x0] * (1 - fx) * (1 - fy) + noise[y0 + x1] * fx * (1 - fy)
+         + noise[y1 + x0] * (1 - fx) * fy + noise[y1 + x1] * fx * fy;
+  };
+
+  // ---------- layout: everything that does not depend on the rotation is computed once ----------
+  function resize() {
+    dpr = window.devicePixelRatio || 1;
+    const vw = innerWidth, vh = innerHeight;
+    W = vw + 2 * M; H = vh + 2 * M;
+    for (const [cv, c] of [[skyCv, sky], [txtCv, txt]]) {
+      cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+      cv.style.width = W + 'px'; cv.style.height = H + 'px';
+      c.setTransform(dpr, 0, 0, dpr, 0, 0); c.font = FONT; c.textBaseline = 'top';
+    }
+    txt.fillStyle = '#fff';
+    cw = txt.measureText('M').width; ch = FONT_SIZE * 1.12;
+    cols = Math.ceil(W / cw); rows = Math.ceil(H / ch);
+    hc = Math.ceil(cols / HZ); hr = Math.ceil(rows / HZ);
+    glyphs.style.width = W + 'px'; glyphs.style.height = H + 'px';
+    // small canvases, stretched by CSS so that one pixel covers exactly one character cell
+    for (const cv of [glowCv, tintCv]) {
+      cv.width = cols; cv.height = rows;
+      cv.style.width = cols * cw + 'px'; cv.style.height = rows * ch + 'px';
+    }
+    hazeCv.width = hc; hazeCv.height = hr;
+    hazeCv.style.width = hc * HZ * cw + 'px'; hazeCv.style.height = hr * HZ * ch + 'px';
+    glowImg = glowX.createImageData(cols, rows);
+    tintImg = tintX.createImageData(cols, rows);
+    hazeImg = hazeX.createImageData(hc, hr);
+    haze = new Float32Array(hc * hr * 4);
+    grid = new Float32Array(cols * rows); gridCol = new Float32Array(cols * rows * 3);
+    chars = new Uint8Array(cols * rows); rowUsed = new Uint8Array(rows);
+
+    // ---- geometry (static): which point of the disk each character cell is looking at ----
+    R = Math.min(vw * 0.42 / (ROUT + 0.6), vh * 0.36 / 7.4); // pixels per Schwarzschild radius
+    cx = W / 2; cy = M + vh * 0.47;
+    const hs = $('hole').style, hrad = (BC - 0.1) * R;
+    hs.left = cx - hrad + 'px'; hs.top = cy - hrad + 'px'; hs.width = hs.height = 2 * hrad + 'px';
+    const sstep = (e0, e1, v) => { const f = Math.min(1, Math.max(0, (v - e0) / (e1 - e0))); return f * f * (3 - 2 * f); };
+    const C = [[140, 36, 18], [232, 104, 32], [255, 186, 88], [255, 244, 226]]; // cool -> hot
+    const a = [];
+    for (let j = 0; j < rows; j++) {
+      const py = j * ch + ch / 2 - cy;
+      for (let i = 0; i < cols; i++) {
+        const px = i * cw + cw / 2 - cx;
+        const x = (px * cosPA + py * sinPA) / R, up = (px * sinPA - py * cosPA) / R;
+        const b2 = x * x + up * up, b = Math.sqrt(b2);
+        if (b > ROUT + 1 || b < 0.3) continue;
+        const beta = Math.atan2(up, x);
+        // light bending (Beloborodov's approximation): from the position on screen to the radius r on the disk
+        const phi = Math.atan2(up / COS_I, x), k = 1 + Math.sin(phi) * SIN_I;
+        const u = (2 * b2 - k * k - Math.sqrt(k * (k * k * k + 4 * b2 * (2 - k)))) / (2 * b2);
+        const r = u > 0 && u < 1 ? 1 / (1 - u) : 0;
+        let br, ang, ring, col, vary = 1;
+        if (r >= RIN && r <= ROUT) {
+          // the disk: near side passing in front of the hole, far side bent up and over it
+          const v = Math.sqrt(0.5 / r); // orbital speed (c = 1)
+          const dop = Math.sqrt(1 - v * v) / (1 + v * SIN_I * Math.cos(phi)); // approaching side is brighter
+          br = 1.6 * sstep(RIN, RIN + 0.7, r) * Math.pow(RIN / r, 1.7) * (1 - sstep(ROUT - 4.5, ROUT, r)) * Math.pow(dop, 1.9);
+          const tc = Math.min(1, Math.pow(RIN / r, 0.55) * dop / 1.45);
+          const s = tc < 0.4 ? 0 : tc < 0.72 ? 1 : 2, f = s === 0 ? tc / 0.4 : s === 1 ? (tc - 0.4) / 0.32 : (tc - 0.72) / 0.28;
+          col = [0, 1, 2].map(q => C[s][q] + (C[s + 1][q] - C[s][q]) * f);
+          ang = phi; ring = (r - RIN) * NRING;
+        } else if (b >= BC - 0.1 && b < BC + 0.16) {
+          // photon ring: light that went around the hole before reaching us
+          br = 0.95 - 0.3 * Math.cos(beta); col = [255, 226, 180]; ang = beta; ring = 0; vary = 0.3;
+        } else {
+          // faint second image of the disk, wrapped under the hole
+          const w = up < 0 ? 0.12 + 0.45 * Math.pow(-Math.sin(beta), 1.3) : 0.12, d = (b - BC - 0.16) / w;
+          if (b < BC || d < 0 || d >= 1) continue;
+          br = 0.5 * (1 - d) * (1 - 0.3 * Math.cos(beta)); col = [255, 160, 70]; ang = beta; ring = 1 + d * 2; vary = 0.6;
+        }
+        const k0 = j * cols + i;
+        gridCol[k0 * 3] = col[0]; gridCol[k0 * 3 + 1] = col[1]; gridCol[k0 * 3 + 2] = col[2];
+        a.push(k0, ang / (2 * Math.PI) * 512, ring, br, vary);
+      }
+    }
+    count = a.length / 5;
+    AK = new Int32Array(count); AT = new Float32Array(count); AG = new Float32Array(count); ABR = new Float32Array(count); AV = new Float32Array(count);
+    for (let n = 0; n < count; n++) { AK[n] = a[n * 5]; AT[n] = a[n * 5 + 1]; AG[n] = a[n * 5 + 2]; ABR[n] = a[n * 5 + 3]; AV[n] = a[n * 5 + 4]; }
+    // each ring of streaks turns at its own speed: fast near the hole, slow at the rim
+    const nr = Math.ceil((ROUT - RIN) * NRING) + 4;
+    RW = Float64Array.from({ length: nr }, (_, i) => Math.pow((RIN + (i + 0.5) / NRING) / RIN, -1.5));
+    OFF = new Float64Array(nr);
+
+    stars = Array.from({ length: Math.floor(cols * rows * 0.006) }, () => ({
+      i: Math.random() * cols | 0, j: Math.random() * rows | 0,
+      p: Math.random() * 6.28, s: 0.4 + Math.random() * 1.8, b: Math.pow(Math.random(), 2)
+    }));
+  }
+  addEventListener('resize', resize); resize();
+
+  // ---------- black hole layer ----------
+  function drawHole(t) {
+    // 1) brightness of every cell: fixed geometry x streaks of gas carried around by the rotation
+    const turn = t * SPIN * 512 / (2 * Math.PI);
+    for (let i = 0; i < OFF.length; i++) OFF[i] = turn * RW[i];
+    for (let n = 0; n < count; n++) {
+      const g = AG[n], i0 = g | 0, f = g - i0, at = AT[n];
+      const nv = nz(at - OFF[i0], i0 * 13.7 + 5) * (1 - f) + nz(at - OFF[i0 + 1], i0 * 13.7 + 18.7) * f;
+      const s = Math.min(1, Math.max(0, (nv - 0.3) * 2.5));
+      grid[AK[n]] = ABR[n] * (1 + AV[n] * (1.5 * s * s - 0.7));
+    }
+
+    // 2) turn the grid into: glow (+ mask hiding the stars behind), wide haze, glyph colours, text rows
+    const gd = glowImg.data, td = tintImg.data, hd = hazeImg.data;
+    gd.fill(0); td.fill(0); haze.fill(0); chars.fill(32); rowUsed.fill(0);
+    for (let n = 0; n < count; n++) {
+      const k = AK[n], b = grid[k];
+      if (b <= 0) continue;
+      const k3 = k * 3, k4 = k * 4, r = gridCol[k3], g = gridCol[k3 + 1], bl = gridCol[k3 + 2];
+      const j = (k / cols) | 0, i = k - j * cols;
+      const gl = Math.min(1, b * 0.55), light = gl * 0.5;
+      const a = Math.max(light, Math.min(1, Math.max(0, (b - 0.06) * 6))), f = light / a;
+      gd[k4] = r * f; gd[k4 + 1] = g * f; gd[k4 + 2] = bl * f; gd[k4 + 3] = a * 255;
+      const h4 = ((j >> 3) * hc + (i >> 3)) * 4;
+      haze[h4] += r * gl; haze[h4 + 1] += g * gl; haze[h4 + 2] += bl * gl; haze[h4 + 3] += gl;
+      const bb = Math.min(1, Math.pow(b, 0.8)), idx = Math.min(L - 1, Math.floor(bb * L));
+      if (idx === 0) continue;
+      const lum = 0.45 + 0.55 * bb;
+      td[k4] = r * lum; td[k4 + 1] = g * lum; td[k4 + 2] = bl * lum; td[k4 + 3] = 255;
+      chars[k] = CODES[idx]; rowUsed[j] = 1;
+    }
+    for (let q = 0; q < haze.length; q += 4) {
+      const sum = haze[q + 3];
+      if (sum > 0) { hd[q] = haze[q] / sum; hd[q + 1] = haze[q + 1] / sum; hd[q + 2] = haze[q + 2] / sum; }
+      hd[q + 3] = sum * (255 / (HZ * HZ));
+    }
+    glowX.putImageData(glowImg, 0, 0); tintX.putImageData(tintImg, 0, 0); hazeX.putImageData(hazeImg, 0, 0);
+
+    // 3) glyphs: one fillText per row, in white; the tint layer above gives them their colour
+    txt.clearRect(0, 0, W, H);
+    for (let r = 0; r < rows; r++) {
+      if (rowUsed[r]) txt.fillText(String.fromCharCode.apply(null, chars.subarray(r * cols, (r + 1) * cols)), 0, r * ch);
+    }
+  }
+
+  // ---------- sky layer: twinkling stars + the occasional shooting star ----------
+  const styleCache = new Map();
+  const style = (r, g, b) => {
+    const key = ((r >> 3) << 10) | ((g >> 3) << 5) | (b >> 3);
+    let s = styleCache.get(key);
+    if (!s) { s = `rgb(${(r >> 3) << 3},${(g >> 3) << 3},${(b >> 3) << 3})`; styleCache.set(key, s); }
+    return s;
+  };
+  const TRAIL = '@*+=~--::...';
+  let meteor = null, nextMeteor = 4 + Math.random() * 6;
+
+  function drawSky(t) {
+    sky.clearRect(0, 0, W, H);
+    for (const s of stars) {
+      const tw = 0.5 + 0.5 * Math.sin(t * s.s + s.p);
+      const v = 0.2 + 0.8 * tw * (0.3 + 0.7 * s.b);
+      const g = s.b > 0.75 && tw > 0.85 ? '*' : s.b > 0.4 && tw > 0.5 ? '+' : '.';
+      const c = (60 + 195 * v) | 0;
+      sky.fillStyle = style(c, c, Math.min(255, c + 20));
+      sky.fillText(g, s.i * cw, s.j * ch);
+    }
+    if (reduce) return;
+    if (!meteor && t > nextMeteor) {
+      const dir = Math.random() < 0.5 ? 1 : -1;
+      meteor = {
+        x: W * (0.15 + Math.random() * 0.7), y: H * Math.random() * 0.35,
+        vx: dir * (500 + Math.random() * 400), vy: 180 + Math.random() * 220,
+        t0: t, life: 0.7 + Math.random() * 0.5
+      };
+    }
+    if (!meteor) return;
+    const age = t - meteor.t0;
+    if (age > meteor.life) { meteor = null; nextMeteor = t + 7 + Math.random() * 13; return; }
+    const sp = Math.hypot(meteor.vx, meteor.vy), ux = meteor.vx / sp, uy = meteor.vy / sp;
+    const hx = meteor.x + meteor.vx * age, hy = meteor.y + meteor.vy * age;
+    const fade = Math.sin(Math.PI * age / meteor.life);
+    for (let q = 0; q < TRAIL.length; q++) {
+      const i = ((hx - ux * q * 9) / cw) | 0, j = ((hy - uy * q * 9) / ch) | 0;
+      const v = fade * (1 - q / TRAIL.length);
+      sky.fillStyle = style((255 * v) | 0, (245 * v) | 0, (255 * v) | 0);
+      sky.fillText(TRAIL[q], i * cw, j * ch);
+    }
+  }
+
+  // disk at ~12 fps, sky at 10 fps, full speed only while a shooting star is passing
+  let lastGal = -1e9, lastSky = -1e9;
+  function frame(now) {
+    requestAnimationFrame(frame);
+    const t = now / 1000;
+    if (now - lastGal >= 80) { lastGal = now; drawHole(t); }
+    if (now - lastSky >= (meteor ? 16 : 100)) { lastSky = now; drawSky(t); }
+  }
+  requestAnimationFrame(frame);
+
+  // ---------- search: start typing anywhere, Esc clears ----------
+  const q = document.querySelector('#search input');
+  addEventListener('keydown', e => {
+    if (e.key === 'Escape') { q.value = ''; q.blur(); return; }
+    if (document.activeElement === q || e.ctrlKey || e.metaKey || e.altKey || e.key.length !== 1) return;
+    q.focus();
+  });
+
+  // ---------- clock ----------
+  const tEl = document.querySelector('#clock .t'), dEl = document.querySelector('#clock .d');
+  function tick() {
+    const d = new Date();
+    tEl.textContent = d.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
+    dEl.textContent = d.toLocaleDateString('it-IT', { weekday: 'long', day: 'numeric', month: 'long' }).toUpperCase();
+  }
+  tick(); setInterval(tick, 1000);
+
+  // ---------- offline: keep a copy of the page in the browser ----------
+  if ('serviceWorker' in navigator && location.protocol === 'https:') {
+    navigator.serviceWorker.register('sw.js').catch(() => {});
+  }
+})();
+</script>
+</body>
+</html>
